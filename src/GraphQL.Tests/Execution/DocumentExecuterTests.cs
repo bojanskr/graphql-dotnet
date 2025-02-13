@@ -1,8 +1,10 @@
 using GraphQL.DI;
 using GraphQL.Execution;
+using GraphQL.SystemTextJson;
 using GraphQL.Types;
 using GraphQL.Validation;
 using Microsoft.Extensions.DependencyInjection;
+using Moq;
 
 namespace GraphQL.Tests.Execution;
 
@@ -95,6 +97,356 @@ public class DocumentExecuterTests
         var executer = provider.GetRequiredService<IDocumentExecuter>();
         var ret = await executer.ExecuteAsync(new());
         ret.ShouldBeNull(); // validates that all configured executions have run, as normally this would never be null
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ConfigureExecution_Does_Not_Wrap_OCE(bool throwOnUnhandledException)
+    {
+        bool hit = false;
+        var services = new ServiceCollection();
+        services.AddGraphQL(b => b
+            .AddUnhandledExceptionHandler(_ => throw new NotSupportedException())
+            .ConfigureExecution((options, next) =>
+            {
+                hit = true;
+                options.CancellationToken.ThrowIfCancellationRequested();
+                return next(options);
+            })
+        );
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        using var provider = services.BuildServiceProvider();
+        var executer = provider.GetRequiredService<IDocumentExecuter>();
+        var executionOptions = new ExecutionOptions
+        {
+            Query = "{hero}",
+            RequestServices = provider,
+            CancellationToken = cts.Token,
+            ThrowOnUnhandledException = throwOnUnhandledException,
+        };
+        await executer.ExecuteAsync(executionOptions).ShouldThrowAsync<OperationCanceledException>();
+        hit.ShouldBeTrue();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Execution_Does_Not_Wrap_OCE(bool throwOnUnhandledException)
+    {
+        using var cts = new CancellationTokenSource();
+        bool hit = false;
+        var schema = new Mock<ISchema>(MockBehavior.Loose);
+        schema.Setup(s => s.Initialize()).Callback(() =>
+        {
+            hit = true;
+            cts.Cancel();
+            cts.Token.ThrowIfCancellationRequested();
+        });
+        var services = new ServiceCollection();
+        services.AddGraphQL(b => b
+            .AddSchema(schema.Object)
+            .AddUnhandledExceptionHandler(_ => throw new NotSupportedException())
+        );
+        using var provider = services.BuildServiceProvider();
+        var executer = provider.GetRequiredService<IDocumentExecuter<ISchema>>();
+        var executionOptions = new ExecutionOptions
+        {
+            Query = "{hero}",
+            RequestServices = provider,
+            CancellationToken = cts.Token,
+            ThrowOnUnhandledException = throwOnUnhandledException,
+        };
+        await executer.ExecuteAsync(executionOptions).ShouldThrowAsync<OperationCanceledException>();
+        hit.ShouldBeTrue();
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ConfigureExecution_Returns_ExecutionError(bool throwOnUnhandledException)
+    {
+        var services = new ServiceCollection();
+        services.AddGraphQL(b => b
+            .AddUnhandledExceptionHandler(_ => throw new NotSupportedException())
+            .ConfigureExecution((options, next) => throw new MyExecutionError("Testing"))
+        );
+        using var provider = services.BuildServiceProvider();
+        var executer = provider.GetRequiredService<IDocumentExecuter>();
+        var executionOptions = new ExecutionOptions
+        {
+            Query = "{hero}",
+            RequestServices = provider,
+            ThrowOnUnhandledException = throwOnUnhandledException,
+        };
+        var ret = await executer.ExecuteAsync(executionOptions);
+        ret.Errors.ShouldHaveSingleItem().ShouldBeOfType<MyExecutionError>()
+            .Message.ShouldBe("Testing");
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Execution_Returns_ExecutionError(bool throwOnUnhandledException)
+    {
+        var schema = new Mock<ISchema>(MockBehavior.Loose);
+        schema.Setup(s => s.Initialize()).Callback(() => throw new MyExecutionError("Testing"));
+        var services = new ServiceCollection();
+        services.AddGraphQL(b => b
+            .AddUnhandledExceptionHandler(_ => throw new NotSupportedException())
+            .AddSchema(schema.Object)
+        );
+        using var provider = services.BuildServiceProvider();
+        var executer = provider.GetRequiredService<IDocumentExecuter<ISchema>>();
+        var executionOptions = new ExecutionOptions
+        {
+            Query = "{hero}",
+            RequestServices = provider,
+            ThrowOnUnhandledException = throwOnUnhandledException,
+        };
+        var ret = await executer.ExecuteAsync(executionOptions);
+        ret.Errors.ShouldHaveSingleItem().ShouldBeOfType<MyExecutionError>()
+            .Message.ShouldBe("Testing");
+    }
+
+    [Theory]
+    [InlineData(true, false, false)]
+    [InlineData(false, false, false)]
+    [InlineData(false, false, true)]
+    [InlineData(false, true, false)]
+    public async Task ConfigureExecution_Wraps_OtherExeceptions(bool throwOnUnhandledException, bool overrideMessage, bool setCustomError)
+    {
+        var ran = false;
+        var services = new ServiceCollection();
+        services.AddGraphQL(b => b
+            .ConfigureExecution((options, next) => throw new ApplicationException("Testing"))
+            .AddUnhandledExceptionHandler(context =>
+            {
+                ran = true;
+                context.Exception.ShouldBeOfType<ApplicationException>().Message.ShouldBe("Testing");
+                context.Exception = setCustomError
+                    ? new MyExecutionError("Testing 2")
+                    : new ApplicationException("Testing 3");
+                if (overrideMessage)
+                    context.ErrorMessage = "Testing 4";
+                return Task.CompletedTask;
+            })
+        );
+        using var provider = services.BuildServiceProvider();
+        var executer = provider.GetRequiredService<IDocumentExecuter>();
+        var executionOptions = new ExecutionOptions
+        {
+            Query = "{hero}",
+            RequestServices = provider,
+            ThrowOnUnhandledException = throwOnUnhandledException,
+        };
+        if (throwOnUnhandledException)
+        {
+            var ex = await executer.ExecuteAsync(executionOptions).ShouldThrowAsync<ApplicationException>();
+            ex.Message.ShouldBe("Testing");
+            ran.ShouldBeFalse();
+        }
+        else
+        {
+            var ret = await executer.ExecuteAsync(executionOptions);
+            if (!setCustomError)
+            {
+                var ex = ret.Errors.ShouldHaveSingleItem().ShouldBeOfType<UnhandledError>();
+                ex.Message.ShouldBe(overrideMessage ? "Testing 4" : "Error executing document.");
+                ex.InnerException.ShouldBeOfType<ApplicationException>()
+                    .Message.ShouldBe("Testing 3");
+            }
+            else
+            {
+                ret.Errors.ShouldHaveSingleItem().ShouldBeOfType<MyExecutionError>()
+                    .Message.ShouldBe("Testing 2");
+            }
+            ran.ShouldBeTrue();
+        }
+    }
+
+    [Theory]
+    [InlineData(true, false, false)]
+    [InlineData(false, false, false)]
+    [InlineData(false, false, true)]
+    [InlineData(false, true, false)]
+    public async Task Execution_Wraps_OtherExeceptions(bool throwOnUnhandledException, bool overrideMessage, bool setCustomError)
+    {
+        ExecutionOptions executionOptions = null!;
+        var schema = new Mock<ISchema>(MockBehavior.Loose);
+        schema.Setup(s => s.Initialize()).Callback(() => throw new ApplicationException("Testing"));
+        var ran = false;
+        var services = new ServiceCollection();
+        services.AddGraphQL(b => b
+            .AddSchema(schema.Object)
+            .AddUnhandledExceptionHandler(context =>
+            {
+                ran = true;
+                context.ExecutionOptions.ShouldBe(executionOptions);
+                context.FieldContext.ShouldBeNull();
+                context.Context.ShouldBeNull();
+                context.Exception.ShouldBeOfType<ApplicationException>().Message.ShouldBe("Testing");
+                context.Exception = setCustomError
+                    ? new MyExecutionError("Testing 2")
+                    : new ApplicationException("Testing 3");
+                if (overrideMessage)
+                    context.ErrorMessage = "Testing 4";
+                return Task.CompletedTask;
+            })
+        );
+        using var provider = services.BuildServiceProvider();
+        var executer = provider.GetRequiredService<IDocumentExecuter>();
+        executionOptions = new ExecutionOptions
+        {
+            Query = "{hero}",
+            RequestServices = provider,
+            ThrowOnUnhandledException = throwOnUnhandledException,
+        };
+        if (throwOnUnhandledException)
+        {
+            var ex = await executer.ExecuteAsync(executionOptions).ShouldThrowAsync<ApplicationException>();
+            ex.Message.ShouldBe("Testing");
+            ran.ShouldBeFalse();
+        }
+        else
+        {
+            var ret = await executer.ExecuteAsync(executionOptions);
+            if (!setCustomError)
+            {
+                var ex = ret.Errors.ShouldHaveSingleItem().ShouldBeOfType<UnhandledError>();
+                ex.Message.ShouldBe(overrideMessage ? "Testing 4" : "Error executing document.");
+                ex.InnerException.ShouldBeOfType<ApplicationException>()
+                    .Message.ShouldBe("Testing 3");
+            }
+            else
+            {
+                ret.Errors.ShouldHaveSingleItem().ShouldBeOfType<MyExecutionError>()
+                    .Message.ShouldBe("Testing 2");
+            }
+            ran.ShouldBeTrue();
+        }
+    }
+
+    [Fact]
+    public async Task Timeout_Throws()
+    {
+        var query = new ObjectGraphType();
+        query.Field<StringGraphType>("test")
+            .ResolveAsync(async context =>
+            {
+                // note that it is possible that the execution strategy or other code
+                // cancels execution before hitting this code
+                context.CancellationToken.CanBeCanceled.ShouldBeTrue();
+                await Task.Delay(10000, context.CancellationToken);
+                return "test";
+            });
+        var schema = new Schema() { Query = query };
+        var de = new DocumentExecuter();
+        await de.ExecuteAsync(o =>
+        {
+            o.Schema = schema;
+            o.Query = "{test}";
+            o.Timeout = TimeSpan.FromMilliseconds(100);
+            o.TimeoutAction = TimeoutAction.ThrowTimeoutException;
+        }).ShouldThrowAsync<TimeoutException>();
+    }
+
+    [Fact]
+    public async Task Timeout_Returns()
+    {
+        var query = new ObjectGraphType();
+        query.Field<StringGraphType>("test")
+            .ResolveAsync(async context =>
+            {
+                // note that it is possible that the execution strategy or other code
+                // cancels execution before hitting this code
+                context.CancellationToken.CanBeCanceled.ShouldBeTrue();
+                await Task.Delay(10000, context.CancellationToken);
+                return "test";
+            });
+        var schema = new Schema() { Query = query };
+        var de = new DocumentExecuter();
+        var ret = await de.ExecuteAsync(o =>
+        {
+            o.Schema = schema;
+            o.Query = "{test}";
+            o.Timeout = TimeSpan.FromMilliseconds(100);
+            o.TimeoutAction = TimeoutAction.ReturnTimeoutError;
+        });
+        ret.Executed.ShouldBeFalse();
+        ret.Data.ShouldBeNull();
+        ret.Errors.ShouldHaveSingleItem().ShouldBeOfType<TimeoutError>();
+        // additionally verify the message, code, codes, etc
+        var result = new GraphQLSerializer().Serialize(ret);
+        result.ShouldBeCrossPlatJson("""
+            {"errors":[{"message":"The operation has timed out.","extensions":{"code":"TIMEOUT","codes":["TIMEOUT"]}}]}
+            """);
+    }
+
+    [Fact]
+    public async Task Timeout_Infinite_NoUnderlyingToken()
+    {
+        var query = new ObjectGraphType();
+        query.Field<StringGraphType>("test")
+            .Resolve(context =>
+            {
+                context.CancellationToken.CanBeCanceled.ShouldBeFalse();
+                return "test";
+            });
+        var schema = new Schema() { Query = query };
+        var de = new DocumentExecuter();
+        var ret = await de.ExecuteAsync(o =>
+        {
+            o.Schema = schema;
+            o.Query = "{test}";
+            o.Timeout.ShouldBe(Timeout.InfiniteTimeSpan);
+        });
+        ret.Executed.ShouldBeTrue();
+        ret.Data.ShouldNotBeNull();
+        ret.Errors.ShouldBeNull();
+        var result = new GraphQLSerializer().Serialize(ret);
+        result.ShouldBeCrossPlatJson("""
+            {"data":{"test":"test"}}
+            """);
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    public async Task Timeout_Infinite_PassThrough(bool rethrowTimeout, bool withTimeout)
+    {
+        using var cts = new CancellationTokenSource();
+        var query = new ObjectGraphType();
+        query.Field<StringGraphType>("test")
+            .ResolveAsync(async context =>
+            {
+                context.CancellationToken.CanBeCanceled.ShouldBeTrue();
+                cts.CancelAfter(100); // ensure asynchronous cancellation by using CancelAfter
+                await Task.Delay(10000, context.CancellationToken);
+                return "test";
+            });
+        var schema = new Schema() { Query = query };
+        var de = new DocumentExecuter();
+        var task = de.ExecuteAsync(o =>
+        {
+            o.Schema = schema;
+            o.Query = "{test}";
+            o.Timeout.ShouldBe(Timeout.InfiniteTimeSpan);
+            if (withTimeout)
+                o.Timeout = TimeSpan.FromSeconds(10);
+            o.TimeoutAction = rethrowTimeout ? TimeoutAction.ThrowTimeoutException : TimeoutAction.ReturnTimeoutError;
+            o.CancellationToken = cts.Token;
+        });
+        // verify that OCE is rethrown regardless of TimeoutAction
+        await task.ShouldThrowAsync<OperationCanceledException>();
+    }
+
+    private class MyExecutionError : ExecutionError
+    {
+        public MyExecutionError(string message) : base(message) { }
     }
 
     private class MyConfigureExecution : IConfigureExecution

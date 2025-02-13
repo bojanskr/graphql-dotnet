@@ -61,11 +61,20 @@ configuration.
 
 The `AddGraphQL()` method will register default implementations of the following services within the dependency injection framework:
 
-* `IDocumentExecuter`
+* `IDocumentExecuter` and `IDocumentExecuter<>`
 * `IDocumentBuilder`
 * `IDocumentValidator`
 * `IErrorInfoProvider`
-* `IExecutionStrategySelector` - which does not support subscriptions by default
+* `IExecutionStrategySelector`
+
+These generic graph types are also registered:
+
+* `EdgeType<>`, `ConnectionType<>`, `ConnectionType<,>` and `PageInfoType`
+* `EnumerationGraphType<>`
+* `InputObjectGraphType<>`
+* `AutoRegisteringInputObjectGraphType<>`
+* `AutoRegisteringObjectGraphType<>`
+* `AutoRegisteringInterfaceGraphType<>`
 
 A list of the available extension methods is below:
 
@@ -82,8 +91,10 @@ A list of the available extension methods is below:
 | `AddErrorInfoProvider`  | Registers a custom error info provider or configures the default error info provider | |
 | `AddExecutionStrategy`  | Registers an `ExecutionStrategyRegistration` for the selected execution strategy and operation type | |
 | `AddExecutionStrategySelector` | Registers the specified execution strategy selector | |
+| `AddFederation`         | Registers the federation types and configures the schema to support Apollo Federation | |
 | `AddGraphTypes`         | Scans the specified assembly for graph types and registers them within the DI framework | |
 | `AddGraphTypeMappingProvider` | Registers a graph type mapping provider for unmapped CLR types | |
+| `AddLegacyComplexityAnalyzer` | Enables the v7 complexity analyzer and configures its options | |
 | `AddNewtonsoftJson`     | Registers the serializer that uses Newtonsoft.Json as its underlying JSON serialization engine | GraphQL.NewtonsoftJson |
 | `AddSchema<>`           | Registers the specified schema | |
 | `AddSchemaVisitor<>`    | Registers the specified schema visitor and configures it to be used at schema initialization | |
@@ -100,7 +111,9 @@ A list of the available extension methods is below:
 | `UseAutomaticPersistedQueries` | Enables Automatic Persisted Queries support | GraphQL.MemoryCache |
 | `UseMemoryCache`        | Registers the memory document cache and configures its options | GraphQL.MemoryCache |
 | `UseMiddleware<>`       | Registers the specified middleware and configures it to be installed during schema initialization | |
+| `UsePersistedDocuments` | Registers the persisted document handler and configures its options | |
 | `UseTelemetry`          | Creates telemetry events based on the System.Diagnostics.Activity API, primarily for use with OpenTelemetry | .NET 5+ |
+| `WithTimeout`           | Configures the execution timeout | |
 
 The above methods will register the specified services typically as singletons unless otherwise specified. Graph types and middleware are registered
 as transients so that they will match the schema lifetime. So with a singleton schema, all services are effectively singletons.
@@ -352,7 +365,7 @@ public class MyGraphType : ObjectGraphType<Category>
             .Resolve()
             .WithScope() // creates a service scope as described above; not necessary for serial execution
             .WithService<MyDbContext>()
-            .ResolveAsync((context, db) => db.Products.Where(x => x.CategoryId == context.Source.Id).ToListAsync());
+            .ResolveAsync(async (context, db) => await db.Products.Where(x => x.CategoryId == context.Source.Id).ToListAsync());
     }
 }
 ```

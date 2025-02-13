@@ -2,12 +2,11 @@ name: Test code
 
 on:
   pull_request:
-    branches:
-      - master
-      - develop
     paths:
       - src/**
+      - samples/**
       - .github/workflows/**
+      - '*'
   # Upload code coverage results when PRs are merged
   push:
     branches:
@@ -15,7 +14,9 @@ on:
       - develop
     paths:
       - src/**
+      - samples/**
       - .github/workflows/**
+      - '*'
 
 env:
   DOTNET_NOLOGO: true
@@ -39,22 +40,23 @@ jobs:
             5.0.x
             6.0.x
             7.0.x
+            8.0.x
           source-url: https://nuget.pkg.github.com/graphql-dotnet/index.json
         env:
           NUGET_AUTH_TOKEN: ${{secrets.GITHUB_TOKEN}}
       - name: Install dependencies
-        working-directory: src
+        working-directory: .
         run: dotnet restore
       - name: Build solution [Release]
         if: ${{ startsWith(matrix.os, 'ubuntu') }}
-        working-directory: src
+        working-directory: .
         run: dotnet build --no-restore -c Release
       - name: Build solution [Debug]
-        working-directory: src
+        working-directory: .
         run: dotnet build --no-restore -c Debug -p:DeterministicSourcePaths=false
       - name: Test solution [Debug] with code coverage
         if: ${{ startsWith(matrix.os, 'ubuntu') }}
-        working-directory: src
+        working-directory: .
         run: >
           dotnet test
           --no-restore
@@ -66,21 +68,21 @@ jobs:
           DataCollectionRunSettings.DataCollectors.DataCollector.Configuration.Exclude=[GraphQL.StarWars]*,[GraphQL.Harness]*,[GraphQL.Dummy]*
       - name: Test solution [Debug] without code coverage
         if: ${{ startsWith(matrix.os, 'windows') }}
-        working-directory: src
+        working-directory: .
         run: dotnet test --no-restore --no-build
       - name: Test code-first AOT compilation
-        working-directory: src/GraphQL.AotCompilationSample.CodeFirst
+        working-directory: samples/GraphQL.AotCompilationSample.CodeFirst
         run: |
           dotnet publish -c Release -o publish
           publish/GraphQL.AotCompilationSample.CodeFirst
       - name: Test type-first AOT compilation
-        working-directory: src/GraphQL.AotCompilationSample.TypeFirst
+        working-directory: samples/GraphQL.AotCompilationSample.TypeFirst
         run: |
           dotnet publish -c Release -o publish
           publish/GraphQL.AotCompilationSample.TypeFirst
       - name: Upload coverage to codecov
         if: ${{ startsWith(matrix.os, 'ubuntu') }}
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           files: 'src/.coverage/**/coverage.opencover.xml'
 
@@ -96,25 +98,37 @@ jobs:
       - name: Setup .NET SDKs
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 7.0.x
+          dotnet-version: 8.0.x
           source-url: https://nuget.pkg.github.com/graphql-dotnet/index.json
         env:
           NUGET_AUTH_TOKEN: ${{secrets.GITHUB_TOKEN}}
       - name: Install dependencies
-        working-directory: src
+        working-directory: samples
         run: dotnet restore GraphQL.Federation.SchemaFirst.Sample1
       - name: Build Sample1
-        working-directory: src
+        working-directory: samples
         run: dotnet build --no-restore GraphQL.Federation.SchemaFirst.Sample1
       - name: Build Sample2
-        working-directory: src
+        working-directory: samples
         run: dotnet build GraphQL.Federation.SchemaFirst.Sample2
+      - name: Build Sample3
+        working-directory: samples
+        run: dotnet build GraphQL.Federation.CodeFirst.Sample3
+      - name: Build Sample4
+        working-directory: samples
+        run: dotnet build GraphQL.Federation.TypeFirst.Sample4
       - name: Start Sample1 on port 5601
-        working-directory: src
+        working-directory: samples
         run: dotnet run --no-build --project GraphQL.Federation.SchemaFirst.Sample1 &
       - name: Start Sample2 on port 5602
-        working-directory: src
+        working-directory: samples
         run: dotnet run --no-build --project GraphQL.Federation.SchemaFirst.Sample2 &
+      - name: Start Sample3 on port 5603
+        working-directory: samples
+        run: dotnet run --no-build --project GraphQL.Federation.CodeFirst.Sample3 &
+      - name: Start Sample4 on port 5604
+        working-directory: samples
+        run: dotnet run --no-build --project GraphQL.Federation.TypeFirst.Sample4 &
       - name: Install Apollo Rover CLI
         run: |
           curl -sSL https://rover.apollo.dev/nix/latest | sh
@@ -124,6 +138,7 @@ jobs:
         run: sudo apt-get install -y jq
       - name: Wait for Sample1 to spin up
         run: |
+          set +e  # disable exit on error
           for i in {1..60}
           do
             echo "Request $i to the URL..."
@@ -135,10 +150,12 @@ jobs:
             echo "Did not receive a 200 response, sleeping for 0.5 second..."
             sleep 0.5
           done
+          set -e  # enable exit on error
           echo "Timed out after 30 seconds, step failed."
           exit 1
       - name: Wait for Sample2 to spin up
         run: |
+          set +e  # disable exit on error
           for i in {1..60}
           do
             echo "Request $i to the URL..."
@@ -150,19 +167,59 @@ jobs:
             echo "Did not receive a 200 response, sleeping for 0.5 second..."
             sleep 0.5
           done
+          set -e  # enable exit on error
+          echo "Timed out after 30 seconds, step failed."
+          exit 1
+      - name: Wait for Sample3 to spin up
+        run: |
+          set +e  # disable exit on error
+          for i in {1..60}
+          do
+            echo "Request $i to the URL..."
+            response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5603)
+            if [ $response -eq 200 ]; then
+              echo "Received 200 response, step completed."
+              exit 0
+            fi
+            echo "Did not receive a 200 response, sleeping for 0.5 second..."
+            sleep 0.5
+          done
+          set -e  # enable exit on error
+          echo "Timed out after 30 seconds, step failed."
+          exit 1
+      - name: Wait for Sample4 to spin up
+        run: |
+          set +e  # disable exit on error
+          for i in {1..60}
+          do
+            echo "Request $i to the URL..."
+            response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5604)
+            if [ $response -eq 200 ]; then
+              echo "Received 200 response, step completed."
+              exit 0
+            fi
+            echo "Did not receive a 200 response, sleeping for 0.5 second..."
+            sleep 0.5
+          done
+          set -e  # enable exit on error
           echo "Timed out after 30 seconds, step failed."
           exit 1
       - name: Build supergraph with federation-${{ matrix.federationversion }}-supergraph-config.yaml
-        working-directory: src/Federation
+        working-directory: samples/Federation
         run: rover supergraph compose --config ./federation-${{ matrix.federationversion }}-supergraph-config.yaml --elv2-license=accept > supergraph.graphql
       - name: Print supergraph
-        working-directory: src/Federation
+        working-directory: samples/Federation
         run: cat supergraph.graphql
-      - name: Download router
-        working-directory: src/Federation
+      - name: Download router for federation 1
+        if: matrix.federationversion == 1
+        working-directory: samples/Federation
+        run: curl -sSL https://router.apollo.dev/download/nix/v1.59.0 | sh
+      - name: Download router for federation 2
+        if: matrix.federationversion == 2
+        working-directory: samples/Federation
         run: curl -sSL https://router.apollo.dev/download/nix/latest | sh
       - name: Start router
-        working-directory: src/Federation
+        working-directory: samples/Federation
         run: ./router --dev --supergraph supergraph.graphql &
       - name: Wait for router to spin up
         run: |
@@ -180,38 +237,54 @@ jobs:
           echo "Timed out after 30 seconds, step failed."
           exit 1
       - name: Run GraphQL queries
-        working-directory: src/Federation
+        working-directory: samples/Federation
         run: |
           curl -X POST -H "Content-Type: application/json" -d @federation-request-1.json http://127.0.0.1:4000 > response-1.json
           curl -X POST -H "Content-Type: application/json" -d @federation-request-2.json http://127.0.0.1:4000 > response-2.json
           curl -X POST -H "Content-Type: application/json" -d @federation-request-3.json http://127.0.0.1:4000 > response-3.json
+      - name: Run additional GraphQL queries
+        if: matrix.federationversion == 2
+        working-directory: samples/Federation
+        run: |
+          curl -X POST -H "Content-Type: application/json" -d @federation-request-4.json http://127.0.0.1:4000 > response-4.json
       - name: Print query result 1
-        working-directory: src/Federation
+        working-directory: samples/Federation
         run: cat response-1.json
       - name: Print query result 2
-        working-directory: src/Federation
+        working-directory: samples/Federation
         run: cat response-2.json
       - name: Print query result 3
-        working-directory: src/Federation
+        working-directory: samples/Federation
         run: cat response-3.json
+      - name: Print query result 4
+        if: matrix.federationversion == 2
+        working-directory: samples/Federation
+        run: cat response-4.json
       - name: Compare query result 1 to expected response
-        working-directory: src/Federation
+        working-directory: samples/Federation
         run: |
           jq . response-1.json > actual-response-1.json
           jq . federation-response-1.json > expected-response-1.json
           diff -b actual-response-1.json expected-response-1.json
       - name: Compare query result 2 to expected response
-        working-directory: src/Federation
+        working-directory: samples/Federation
         run: |
           jq . response-2.json > actual-response-2.json
           jq . federation-response-2.json > expected-response-2.json
           diff -b actual-response-2.json expected-response-2.json
       - name: Compare query result 3 to expected response
-        working-directory: src/Federation
+        working-directory: samples/Federation
         run: |
           jq . response-3.json > actual-response-3.json
           jq . federation-response-3.json > expected-response-3.json
           diff -b actual-response-3.json expected-response-3.json
+      - name: Compare query result 4 to expected response
+        if: matrix.federationversion == 2
+        working-directory: samples/Federation
+        run: |
+          jq . response-4.json > actual-response-4.json
+          jq . federation-response-4.json > expected-response-4.json
+          diff -b actual-response-4.json expected-response-4.json
 
   buildcheck:
     needs:

@@ -154,7 +154,7 @@ public class SchemaExporter
             var list = new List<GraphQLInputValueDefinition>(graphType.Fields.Count);
             foreach (var field in graphType.Fields)
             {
-                list.Add(ExportInputValueDefinition(field));
+                list.Add(ExportInputFieldDefinition(field));
             }
             fields = new(list);
         }
@@ -166,11 +166,11 @@ public class SchemaExporter
     }
 
     /// <summary>
-    /// Exports the specified <see cref="FieldType"/> as a <see cref="GraphQLInputValueDefinition"/>.
+    /// Exports the specified <see cref="FieldType"/> as a <see cref="GraphQLInputFieldDefinition"/>.
     /// </summary>
-    protected virtual GraphQLInputValueDefinition ExportInputValueDefinition(FieldType fieldType)
+    protected virtual GraphQLInputFieldDefinition ExportInputFieldDefinition(FieldType fieldType)
     {
-        var ret = new GraphQLInputValueDefinition(new(fieldType.Name), ExportTypeReference(fieldType.ResolvedType!))
+        var ret = new GraphQLInputFieldDefinition(new(fieldType.Name), ExportTypeReference(fieldType.ResolvedType!))
         {
             DefaultValue = fieldType.DefaultValue == null
                 ? null
@@ -195,9 +195,20 @@ public class SchemaExporter
             }
             fields = new(list);
         }
+        GraphQLImplementsInterfaces? interfaces = null;
+        if (graphType.ResolvedInterfaces.Count > 0)
+        {
+            var list = new List<GraphQLNamedType>(graphType.ResolvedInterfaces.Count);
+            foreach (var interfaceType in graphType.ResolvedInterfaces)
+            {
+                list.Add(new(new(interfaceType.Name)));
+            }
+            interfaces = new(list);
+        }
         var ret = new GraphQLInterfaceTypeDefinition(new(graphType.Name))
         {
             Fields = fields,
+            Interfaces = interfaces,
         };
         return ApplyDescription(ApplyDirectives(ret, graphType), graphType);
     }
@@ -239,7 +250,7 @@ public class SchemaExporter
     /// Converts the specified type definition to an extension definition
     /// if it was defined as such by the <see cref="SchemaBuilder"/>.
     /// </summary>
-    protected virtual ASTNode ApplyExtend(ASTNode node, IProvideMetadata graphType)
+    protected virtual ASTNode ApplyExtend(ASTNode node, IMetadataReader graphType)
     {
         if (graphType.HasExtensionAstTypes() && graphType.GetAstType<ASTNode>() == null)
         {
@@ -426,15 +437,15 @@ public class SchemaExporter
     }
 
     /// <summary>
-    /// Exports the specified <see cref="QueryArgument"/> as a <see cref="GraphQLInputValueDefinition"/>.
+    /// Exports the specified <see cref="QueryArgument"/> as a <see cref="GraphQLArgumentDefinition"/>.
     /// </summary>
-    protected virtual GraphQLInputValueDefinition ExportArgumentDefinition(QueryArgument argument)
+    protected virtual GraphQLArgumentDefinition ExportArgumentDefinition(QueryArgument argument)
     {
         var defaultValue = argument.DefaultValue != null
             ? argument.ResolvedType!.ToAST(argument.DefaultValue)
             : null;
 
-        var def = new GraphQLInputValueDefinition(
+        var def = new GraphQLArgumentDefinition(
             new(argument.Name),
             ExportTypeReference(argument.ResolvedType!))
         {
@@ -484,34 +495,41 @@ public class SchemaExporter
     /// already set on the schema object, then the deprecation reason is added
     /// as a directive also.
     /// </summary>
-    protected virtual T ApplyDirectives<T>(T node, IProvideMetadata obj) // v8: IMetadataReader
+    protected virtual T ApplyDirectives<T>(T node, IMetadataReader obj) // v8: IMetadataReader
         where T : IHasDirectivesNode
     {
         var deprecationReason = (obj as IProvideDeprecationReason)?.DeprecationReason;
         var appliedDirectives = obj.GetAppliedDirectives();
-        List<GraphQLDirective>? directives = null;
-        if (appliedDirectives != null && appliedDirectives.Count > 0)
+        var isOneOf = obj is IInputObjectGraphType inputType && inputType.IsOneOf;
+        int directiveCount = (appliedDirectives?.Count ?? 0) + (deprecationReason != null ? 1 : 0) + (isOneOf ? 1 : 0);
+        if (directiveCount > 0)
         {
-            directives = new(appliedDirectives.Count + (deprecationReason != null ? 1 : 0));
-            foreach (var appliedDirective in appliedDirectives)
+            var directives = new List<GraphQLDirective>(directiveCount);
+            if (isOneOf)
             {
-                directives.Add(ExportAppliedDirective(appliedDirective));
-                // do not add the @deprecated directive twice; give preference to the directive
-                // set within the metadata rather than the DeprecationReason property
-                if (appliedDirective.Name == "deprecated")
-                    deprecationReason = null;
+                directives.Add(new(new("oneOf")));
             }
-        }
-        if (deprecationReason != null)
-        {
-            directives ??= new(1);
-            directives.Add(new(new("deprecated"))
+            if (appliedDirectives?.List != null)
             {
-                Arguments = deprecationReason == "" ? null :
-                    new(new(1) { new(new("reason"), new GraphQLStringValue(deprecationReason)) })
-            });
+                foreach (var appliedDirective in appliedDirectives.List)
+                {
+                    directives.Add(ExportAppliedDirective(appliedDirective));
+                    // do not add the @deprecated directive twice; give preference to the directive
+                    // set within the metadata rather than the DeprecationReason property
+                    if (appliedDirective.Name == "deprecated")
+                        deprecationReason = null;
+                }
+            }
+            if (deprecationReason != null)
+            {
+                directives.Add(new(new("deprecated"))
+                {
+                    Arguments = deprecationReason == "" ? null :
+                        new(new(1) { new(new("reason"), new GraphQLStringValue(deprecationReason)) })
+                });
+            }
+            node.Directives = new GraphQLDirectives(directives);
         }
-        node.Directives = directives != null ? new GraphQLDirectives(directives) : null;
         return node;
     }
 

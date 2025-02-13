@@ -1,4 +1,5 @@
 using GraphQL.Types;
+using GraphQL.Validation;
 using GraphQLParser.AST;
 
 namespace GraphQL.Tests.Validation;
@@ -47,7 +48,7 @@ public class Dog : ObjectGraphType
     public Dog()
     {
         Field<StringGraphType>("name")
-            .Argument<StringGraphType>("surname");
+            .Argument<BooleanGraphType>("surname");
         Field<StringGraphType>("nickname");
         Field<BooleanGraphType>("barks");
         Field<IntGraphType>("barkVolume");
@@ -77,7 +78,7 @@ public class Cat : ObjectGraphType
     public Cat()
     {
         Field<StringGraphType>("name")
-            .Argument<StringGraphType>("surname");
+            .Argument<BooleanGraphType>("surname");
         Field<StringGraphType>("nickname");
         Field<BooleanGraphType>("meows");
         Field<IntGraphType>("meowVolume");
@@ -186,6 +187,19 @@ public class ComplexInput2 : InputObjectGraphType
     }
 }
 
+public class ComplexInput3 : InputObjectGraphType
+{
+    public ComplexInput3()
+    {
+        Name = "ComplexInput3";
+        IsOneOf = true;
+        Field<IntGraphType>("intField");
+        Field<StringGraphType>("stringField");
+        Field<BooleanGraphType>("booleanField");
+        Field<ListGraphType<StringGraphType>>("stringListField");
+    }
+}
+
 public class ComplicatedArgs : ObjectGraphType
 {
     public ComplicatedArgs()
@@ -212,6 +226,8 @@ public class ComplicatedArgs : ObjectGraphType
             .Argument<ComplexInput>("complexArg");
         Field<StringGraphType>("complexArgField2")
             .Argument<NonNullGraphType<ComplexInput2>>("complexArg");
+        Field<StringGraphType>("complexArgField3")
+            .Argument<ComplexInput3>("complexArg");
         Field<StringGraphType>("multipleReqs")
             .Argument<NonNullGraphType<IntGraphType>>("req1")
             .Argument<NonNullGraphType<IntGraphType>>("req2");
@@ -230,6 +246,7 @@ public class ValidationQueryRoot : ObjectGraphType
 {
     public ValidationQueryRoot()
     {
+        Name = "Query";
         Field<Human>("human")
             .Argument<IdGraphType>("id", arg => arg.ApplyDirective("length", "min", 2, "max", 5));
         Field<Human>("human2")
@@ -240,6 +257,19 @@ public class ValidationQueryRoot : ObjectGraphType
         Field<DogOrHuman>("dogOrHuman");
         Field<HumanOrAlien>("humanOrAlien");
         Field<ComplicatedArgs>("complicatedArgs");
+        Field<string>("argValidation")
+            .Argument<string>("str1", true)
+            .Argument<string>("str2", true)
+            .ValidateArguments(ctx =>
+            {
+                var str1 = ctx.GetArgument<string>("str1");
+                var str2 = ctx.GetArgument<string>("str2");
+                if (str1 == null && str2 == null)
+                    throw new ValidationError("Must provide str1 or str2");
+                if (str1 == "error")
+                    throw new InvalidOperationException("critical failure");
+                ctx.SetArgument("str2", "str2override");
+            });
     }
 }
 

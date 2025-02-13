@@ -5,19 +5,20 @@ namespace GraphQL.Analyzers.Helpers;
 
 public static class GraphQLExtensions
 {
+    private static readonly byte[] _publicKey = typeof(GraphQLExtensions).Assembly.GetName().GetPublicKey();
+
     /// <summary>
     /// Checks if the given <see cref="ExpressionSyntax"/> represents a symbol defined by the GraphQL library.
     /// </summary>
-    /// <param name="expression">The <see cref="ExpressionSyntax"/> to check.</param>
+    /// <param name="syntaxNode">The <see cref="SyntaxNode"/> to check.</param>
     /// <param name="semanticModel">The <see cref="SemanticModel"/> for semantic analysis.</param>
     /// <returns>
-    /// <see langword="true"/> if the symbol represented by the <paramref name="expression"/>
+    /// <see langword="true"/> if the symbol represented by the <paramref name="syntaxNode"/>
     /// is defined by the GraphQL library; otherwise, returns <see langword="false"/>.
-    /// If the given expression doesn't represent a symbol, the method returns <see langword="false"/>.
     /// </returns>
-    public static bool IsGraphQLSymbol(this ExpressionSyntax expression, SemanticModel semanticModel)
+    public static bool IsGraphQLSymbol(this SyntaxNode syntaxNode, SemanticModel semanticModel)
     {
-        var symbolInfo = semanticModel.GetSymbolInfo(expression);
+        var symbolInfo = semanticModel.GetSymbolInfo(syntaxNode);
 
         return symbolInfo.Symbol?.IsGraphQLSymbol()
                ?? symbolInfo.CandidateSymbols
@@ -29,9 +30,22 @@ public static class GraphQLExtensions
     /// </summary>
     /// <param name="symbol">The <see cref="ISymbol"/> to check.</param>
     /// <returns><see langword="true"/> if the symbol is a GraphQL symbol; otherwise, <see langword="false"/>.</returns>
-    public static bool IsGraphQLSymbol(this ISymbol symbol) =>
+    public static bool IsGraphQLSymbol(this ISymbol symbol)
+    {
         // GraphQL, GraphQL.MicrosoftDI...
-        symbol.ContainingAssembly.Name.StartsWith(Constants.GraphQL);
+        var assembly = symbol.ContainingAssembly;
+        if (assembly == null)
+        {
+            return false;
+        }
+
+        if (!assembly.Identity.HasPublicKey)
+        {
+            return false;
+        }
+
+        return assembly.Identity.PublicKey.SequenceEqual(_publicKey);
+    }
 
     /// <summary>
     /// Gets the return type symbol of the <see cref="ExpressionSyntax"/> which represents a method defined by

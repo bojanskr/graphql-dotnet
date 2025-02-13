@@ -79,6 +79,8 @@
             file: serialization.md
           - title: Dataloader
             file: dataloader.md
+          - title: Complexity Analyzer
+            file: complexity-analyzer.md
           - title: Schema Generation
             file: schema-generation.md
           - title: Known Issues & FAQ
@@ -110,11 +112,33 @@
             file: gql008.md
           - title: GQL009
             file: gql009.md
+          - title: GQL010
+            file: gql010.md
           - title: GQL011
             file: gql011.md
+          - title: GQL012
+            file: gql012.md
+          - title: GQL013
+            file: gql013.md
+          - title: GQL014
+            file: gql014.md
+          - title: GQL015
+            file: gql015.md
+          - title: GQL016
+            file: gql016.md
+          - title: GQL017
+            file: gql017.md
+          - title: GQL018
+            file: gql018.md
+          - title: GQL019
+            file: gql019.md
+          - title: GQL020
+            file: gql020.md
       - title: Migration Guides
         dir: migrations
         items:
+          - title: Migration Guide [v7 -> v8]
+            file: migration8.md
           - title: Migration Guide [v5 -> v7]
             file: migration7.md
           - title: Migration Guide [v4 -> v5]

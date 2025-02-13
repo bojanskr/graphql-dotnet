@@ -7,7 +7,6 @@ using GraphQL.Instrumentation;
 using GraphQL.Introspection;
 using GraphQL.Resolvers;
 using GraphQL.Types.Collections;
-using GraphQL.Types.Relay;
 using GraphQL.Utilities;
 using GraphQLParser;
 
@@ -115,7 +114,7 @@ public class SchemaTypes : IEnumerable<IGraphType>
     private Dictionary<Type, IGraphType> _introspectionTypes;
 
     // Standard scalars https://spec.graphql.org/October2021/#sec-Scalars
-    private readonly Dictionary<Type, IGraphType> _builtInScalars = new IGraphType[]
+    private static readonly Dictionary<Type, IGraphType> _builtInScalars = new IGraphType[]
     {
         new StringGraphType(),
         new BooleanGraphType(),
@@ -126,7 +125,7 @@ public class SchemaTypes : IEnumerable<IGraphType>
     .ToDictionary(t => t.GetType());
 
     // .NET custom scalars
-    private readonly Dictionary<Type, IGraphType> _builtInCustomScalars = new IGraphType[]
+    private static readonly Dictionary<Type, IGraphType> _builtInCustomScalars = new IGraphType[]
     {
         new DateGraphType(),
 #if NET5_0_OR_GREATER
@@ -226,7 +225,14 @@ public class SchemaTypes : IEnumerable<IGraphType>
         _introspectionTypes = CreateIntrospectionTypes(schema.Features.AppliedDirectives, schema.Features.RepeatableDirectives, schema.Features.DeprecationOfInputValues);
 
         _context = new TypeCollectionContext(
-           type => BuildGraphQLType(type, t => _builtInScalars.TryGetValue(t, out var graphType) ? graphType : _introspectionTypes.TryGetValue(t, out graphType) ? graphType : (IGraphType)Activator.CreateInstance(t)!),
+           type => BuildGraphQLType(
+               type,
+               t => _introspectionTypes.TryGetValue(t, out var graphType)
+               ? graphType
+               : (IGraphType?)serviceProvider.GetService(t)
+               ?? (_builtInScalars.TryGetValue(t, out graphType)
+               ? graphType
+               : throw new Exception($"Invalid introspection type '{t.GetFriendlyName()}'"))),
            (name, type, ctx) =>
            {
                SetGraphType(name, type);
@@ -257,7 +263,18 @@ public class SchemaTypes : IEnumerable<IGraphType>
         _nameConverter = schema.NameConverter ?? CamelCaseNameConverter.Instance;
 
         var ctx = new TypeCollectionContext(
-            t => _builtInScalars.TryGetValue(t, out var graphType) ? graphType : (IGraphType)serviceProvider.GetRequiredService(t),
+            serviceType =>
+            {
+                // attempt to pull the required service from the service provider
+                // if the service provider does not provide an instance, and if
+                // the type is a GraphQL.NET built-in type, create an instance of it
+                return (IGraphType?)serviceProvider.GetService(serviceType)
+                    ?? (_builtInScalars.TryGetValue(serviceType, out var graphType)
+                        ? graphType
+                        : _builtInCustomScalars.TryGetValue(serviceType, out graphType)
+                        ? graphType
+                        : throw new InvalidOperationException($"No service for type '{serviceType.GetFriendlyName()}' has been registered."));
+            },
             (name, graphType, context) =>
             {
                 if (this[name] == null)
@@ -313,6 +330,11 @@ public class SchemaTypes : IEnumerable<IGraphType>
         Debug.Assert((_context.InitializationTrace?.Count ?? 0) == 0);
 
         _typeDictionary = null!; // not needed once initialization is complete
+
+        foreach (var type in Dictionary.Values)
+        {
+            type.Initialize(schema);
+        }
     }
 
     private static (IEnumerable<IGraphType>, IEnumerable<Type>) GetSchemaTypes(ISchema schema, IServiceProvider serviceProvider)
@@ -338,9 +360,10 @@ public class SchemaTypes : IEnumerable<IGraphType>
             }
         }
 
-        //TODO: According to the specification, Query is a required type. But if you uncomment these lines, then the mass of tests begin to fail, because they do not set Query.
-        // if (Query == null)
-        //    throw new InvalidOperationException("Query root type must be provided. See https://spec.graphql.org/October2021/#sec-Schema-Introspection");
+#pragma warning disable CS0618 // Type or member is obsolete
+        if (schema.Query == null && GlobalSwitches.RequireRootQueryType)
+            throw new InvalidOperationException("Query root type must be provided. See https://spec.graphql.org/October2021/#sec-Schema-Introspection");
+#pragma warning restore CS0618 // Type or member is obsolete
 
         if (schema.Query != null)
             yield return schema.Query;
@@ -519,7 +542,6 @@ public class SchemaTypes : IEnumerable<IGraphType>
             throw new ArgumentOutOfRangeException(nameof(type), "Only add root types.");
         }
 
-        type.Initialize(context.Schema);
         if (context.InitializationTrace != null)
             type.WithMetadata(INITIALIZATIION_TRACE_KEY, string.Join(Environment.NewLine, context.InitializationTrace));
         SetGraphType(type.Name, type);
@@ -548,14 +570,23 @@ public class SchemaTypes : IEnumerable<IGraphType>
                 {
                     obj.AddResolvedInterface(interfaceInstance);
                     interfaceInstance.AddPossibleType(obj);
+                }
+            }
+        }
 
-                    if (interfaceInstance.ResolveType == null && obj.IsTypeOf == null)
-                    {
-                        throw new InvalidOperationException(
-                           $"Interface type '{interfaceInstance.Name}' does not provide a 'resolveType' function " +
-                           $"and possible Type '{obj.Name}' does not provide a 'isTypeOf' function. " +
-                            "There is no way to resolve this possible type during execution.");
-                    }
+        if (type is IInterfaceGraphType iface)
+        {
+            using var _ = context.Trace("Loop for interfaces of interface type '{0}'", iface.Name);
+            foreach (var objectInterface in iface.Interfaces.List)
+            {
+                using var __ = context.Trace("Interface '{0}'", objectInterface.Name);
+                object typeOrError = RebuildType(objectInterface, false, context.ClrToGraphTypeMappings);
+                if (typeOrError is string error)
+                    throw new InvalidOperationException($"The GraphQL implemented type '{objectInterface.GetFriendlyName()}' for object graph type '{type.Name}' could not be derived implicitly. " + error);
+                var objectInterface2 = (Type)typeOrError;
+                if (AddTypeIfNotRegistered(objectInterface2, context) is IInterfaceGraphType interfaceInstance)
+                {
+                    iface.AddResolvedInterface(interfaceInstance);
                 }
             }
         }
@@ -563,10 +594,6 @@ public class SchemaTypes : IEnumerable<IGraphType>
         if (type is UnionGraphType union)
         {
             using var _ = context.Trace("Loop for possible types of union type '{0}'", union.Name);
-            if (!union.Types.Any() && !union.PossibleTypes.Any())
-            {
-                throw new InvalidOperationException($"Must provide types for Union '{union}'.");
-            }
 
             foreach (var unionedType in union.PossibleTypes)
             {
@@ -739,26 +766,8 @@ Make sure that your ServiceProvider is configured correctly.");
         var foundType = FindGraphType(namedType);
         if (foundType == null)
         {
-            if (namedType == typeof(PageInfoType))
-            {
-                foundType = new PageInfoType();
-                AddType(foundType, context);
-            }
-            else if (namedType.IsGenericType && (namedType.ImplementsGenericType(typeof(EdgeType<>)) || namedType.ImplementsGenericType(typeof(ConnectionType<,>))))
-            {
-                foundType = (IGraphType)Activator.CreateInstance(namedType)!;
-                AddType(foundType, context);
-            }
-            else if (_builtInCustomScalars.TryGetValue(namedType, out var builtInCustomScalar))
-            {
-                foundType = builtInCustomScalar;
-                AddType(foundType, _context); // TODO: why _context instead of context here? See https://github.com/graphql-dotnet/graphql-dotnet/pull/3488
-            }
-            else
-            {
-                foundType = context.ResolveType(namedType);
-                AddTypeWithLoopCheck(foundType, context, namedType);
-            }
+            foundType = context.ResolveType(namedType);
+            AddTypeWithLoopCheck(foundType, context, namedType);
         }
         return foundType;
     }
@@ -933,17 +942,18 @@ Make sure that your ServiceProvider is configured correctly.");
             {
                 var interfaceType = (IInterfaceGraphType)ConvertTypeReference(objectType, list[i]);
 
-                if (objectType.IsTypeOf == null && interfaceType.ResolveType == null)
-                {
-                    throw new InvalidOperationException(
-                           $"Interface type '{interfaceType.Name}' does not provide a 'resolveType' function " +
-                           $"and possible Type '{objectType.Name}' does not provide a 'isTypeOf' function.  " +
-                            "There is no way to resolve this possible type during execution.");
-                }
-
                 interfaceType.AddPossibleType(objectType);
 
                 list[i] = interfaceType;
+            }
+        }
+
+        if (type is IInterfaceGraphType iface)
+        {
+            var list = iface.ResolvedInterfaces.List;
+            for (int i = 0; i < list.Count; ++i)
+            {
+                list[i] = (IInterfaceGraphType)ConvertTypeReference(iface, list[i]);
             }
         }
 

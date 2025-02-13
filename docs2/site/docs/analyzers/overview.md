@@ -58,8 +58,8 @@ that removes these incorrect usages.
 
 ### 4. InputGraphTypeAnalyzer
 
-The analyzer detects input graph type fields that can't be mapped to the source
-type during deserialization process.
+The analyzer verifies the input source type can be constructed and input graph
+type fields can be mapped to the source type during deserialization process.
 
 ### 5. FieldArgumentAnalyzer
 
@@ -76,6 +76,11 @@ appropriate async version.
 
 The analyzer identifies instances of incorrectly using `GraphType` as generic
 type argument, where the type argument should not be of type `IGraphType`.
+
+### 8. OneOfAnalyzer
+
+The analyzer validates the correct definition of the `OneOf` input object
+fields.
 
 ## Configuration in .editorconfig
 

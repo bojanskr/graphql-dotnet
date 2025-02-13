@@ -98,7 +98,7 @@ public class AutoRegisteringInterfaceGraphType<[DynamicallyAccessedMembers(Dynam
 
     /// <inheritdoc cref="AutoRegisteringObjectGraphType{TSourceType}.CreateField(MemberInfo)"/>
     protected virtual FieldType? CreateField(MemberInfo memberInfo)
-        => AutoRegisteringHelper.CreateField(memberInfo, GetTypeInformation, BuildFieldType, false);
+        => AutoRegisteringHelper.CreateField(this, memberInfo, GetTypeInformation, BuildFieldType, false);
 
     /// <inheritdoc cref="AutoRegisteringObjectGraphType{TSourceType}.BuildFieldType(FieldType, MemberInfo)"/>
     protected void BuildFieldType(FieldType fieldType, MemberInfo memberInfo)
@@ -117,11 +117,6 @@ public class AutoRegisteringInterfaceGraphType<[DynamicallyAccessedMembers(Dynam
             getTypedArgumentInfoMethod,
             ApplyArgumentAttributes);
     }
-
-    /// <inheritdoc cref="AutoRegisteringObjectGraphType{TSourceType}.BuildMemberInstanceExpression(MemberInfo)"/>
-    [Obsolete("Interface graph types do not support field resolvers; use of this method is unnecessary.")]
-    protected virtual LambdaExpression BuildMemberInstanceExpression(MemberInfo memberInfo)
-        => throw new NotSupportedException("Interface graph types do not support field resolvers");
 
     private static readonly MethodInfo _getArgumentInformationInternalMethodInfo = typeof(AutoRegisteringInterfaceGraphType<TSourceType>).GetMethod(nameof(GetArgumentInformationInternal), BindingFlags.NonPublic | BindingFlags.Instance)!;
     private ArgumentInformation GetArgumentInformationInternal<TParameterType>(FieldType fieldType, ParameterInfo parameterInfo)

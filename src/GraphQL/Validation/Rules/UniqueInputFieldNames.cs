@@ -1,50 +1,78 @@
+using GraphQL.Types;
 using GraphQL.Validation.Errors;
 using GraphQLParser.AST;
 
-namespace GraphQL.Validation.Rules
+namespace GraphQL.Validation.Rules;
+
+/// <summary>
+/// Unique input field names:
+///
+/// A GraphQL input object value is only valid if all supplied fields are
+/// uniquely named.
+/// 
+/// <para>
+/// Also validates that literals for OneOf Input Objects contain only one field.
+/// </para>
+/// </summary>
+public class UniqueInputFieldNames : ValidationRuleBase
 {
     /// <summary>
-    /// Unique input field names:
-    ///
-    /// A GraphQL input object value is only valid if all supplied fields are
-    /// uniquely named.
+    /// Returns a static instance of this validation rule.
     /// </summary>
-    public class UniqueInputFieldNames : IValidationRule
+#pragma warning disable CS0618 // Type or member is obsolete
+    public static readonly UniqueInputFieldNames Instance = new();
+#pragma warning restore CS0618 // Type or member is obsolete
+
+    /// <inheritdoc cref="UniqueInputFieldNames"/>
+    [Obsolete("Please use the Instance property to retrieve a static instance. This constructor will be removed in v9.")]
+    public UniqueInputFieldNames()
     {
-        /// <summary>
-        /// Returns a static instance of this validation rule.
-        /// </summary>
-        public static readonly UniqueInputFieldNames Instance = new();
-
-        /// <inheritdoc/>
-        /// <exception cref="UniqueInputFieldNamesError"/>
-        public ValueTask<INodeVisitor?> ValidateAsync(ValidationContext context) => new(_nodeVisitor);
-
-        private static readonly INodeVisitor _nodeVisitor = new NodeVisitors(
-                new MatchingNodeVisitor<GraphQLObjectValue>(
-                    enter: (objVal, context) =>
-                    {
-                        var knownNameStack = context.TypeInfo.UniqueInputFieldNames_KnownNameStack ??= new();
-
-                        knownNameStack.Push(context.TypeInfo.UniqueInputFieldNames_KnownNames!);
-                        context.TypeInfo.UniqueInputFieldNames_KnownNames = null;
-                    },
-                    leave: (objVal, context) => context.TypeInfo.UniqueInputFieldNames_KnownNames = context.TypeInfo.UniqueInputFieldNames_KnownNameStack!.Pop()),
-
-                new MatchingNodeVisitor<GraphQLObjectField>(
-                    leave: (objField, context) =>
-                    {
-                        var knownNames = context.TypeInfo.UniqueInputFieldNames_KnownNames ??= new();
-
-                        if (knownNames.TryGetValue(objField.Name, out var value))
-                        {
-                            context.ReportError(new UniqueInputFieldNamesError(context, value, objField));
-                        }
-                        else
-                        {
-                            knownNames[objField.Name] = objField.Value;
-                        }
-                    })
-            );
     }
+
+    /// <inheritdoc/>
+    /// <exception cref="UniqueInputFieldNamesError"/>
+    public override ValueTask<INodeVisitor?> GetPreNodeVisitorAsync(ValidationContext context) => new(_nodeVisitor);
+
+    private static readonly INodeVisitor _nodeVisitor = new NodeVisitors(
+            new MatchingNodeVisitor<GraphQLObjectValue>(
+                enter: (objVal, context) =>
+                {
+                    var knownNameStack = context.TypeInfo.UniqueInputFieldNames_KnownNameStack ??= new();
+
+                    knownNameStack.Push(context.TypeInfo.UniqueInputFieldNames_KnownNames!);
+                    context.TypeInfo.UniqueInputFieldNames_KnownNames = null;
+                },
+                leave: (objVal, context) =>
+                {
+                    if (context.TypeInfo.GetInputType() is IInputObjectGraphType { IsOneOf: true })
+                    {
+                        var fieldCount = context.TypeInfo.UniqueInputFieldNames_KnownNames?.Count ?? 0;
+                        if (fieldCount != 1)
+                        {
+                            context.ReportError(new OneOfInputValuesError(context, objVal));
+                        }
+                    }
+                    context.TypeInfo.UniqueInputFieldNames_KnownNames = context.TypeInfo.UniqueInputFieldNames_KnownNameStack!.Pop();
+                }),
+
+            new MatchingNodeVisitor<GraphQLObjectField>(
+                leave: (objField, context) =>
+                {
+                    var knownNames = context.TypeInfo.UniqueInputFieldNames_KnownNames ??= new();
+
+                    if (knownNames.TryGetValue(objField.Name, out var value))
+                    {
+                        context.ReportError(new UniqueInputFieldNamesError(context, value, objField));
+                    }
+                    else
+                    {
+                        knownNames[objField.Name] = objField.Value;
+                    }
+
+                    if (objField.Value is GraphQLNullValue && context.TypeInfo.GetInputType(1) is IInputObjectGraphType { IsOneOf: true })
+                    {
+                        context.ReportError(new OneOfInputValuesError(context, objField));
+                    }
+                })
+        );
 }

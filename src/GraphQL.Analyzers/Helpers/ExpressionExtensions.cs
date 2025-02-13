@@ -78,7 +78,7 @@ public static class ExpressionExtensions
         context.SemanticModel.GetSymbolInfo(expression).Symbol as IMethodSymbol;
 
     /// <summary>
-    /// Gets the named argument from a method invocation with the specified argument name.
+    /// Gets the method argument from a method invocation with the specified argument name.
     /// </summary>
     /// <param name="invocation">The <see cref="InvocationExpressionSyntax"/> representing the method invocation.</param>
     /// <param name="argumentName">The name of the argument to retrieve.</param>
@@ -91,7 +91,7 @@ public static class ExpressionExtensions
             return null;
         }
 
-        var namedArguments = GetNamedArguments(invocation);
+        var namedArguments = invocation.GetNamedArguments();
         return GetArgument(argumentName, namedArguments, invocation, methodSymbol);
     }
 
@@ -100,10 +100,47 @@ public static class ExpressionExtensions
     /// </summary>
     /// <param name="invocation">The <see cref="InvocationExpressionSyntax"/> to extract named arguments from.</param>
     /// <returns>A dictionary of named arguments.</returns>
-    public static Dictionary<string, ArgumentSyntax> GetNamedArguments(InvocationExpressionSyntax invocation) =>
+    public static Dictionary<string, ArgumentSyntax> GetNamedArguments(this InvocationExpressionSyntax invocation) =>
         invocation.ArgumentList.Arguments
             .Where(arg => arg.NameColon != null)
             .ToDictionary(arg => arg.NameColon!.Name.Identifier.Text);
+
+    /// <summary>
+    /// Gets the attribute arguments expressions.
+    /// </summary>
+    /// <param name="attributeSyntax">The <see cref="AttributeSyntax"/> to analyze.</param>
+    /// <param name="semanticModel">The <see cref="SemanticModel"/> for semantic analysis.</param>
+    /// <returns>Dictionary with an argument name as a key and argument expression as a value.</returns>
+    public static Dictionary<string, ExpressionSyntax>? GetAttributeArguments(this AttributeSyntax attributeSyntax, SemanticModel semanticModel)
+    {
+        if (attributeSyntax.ArgumentList is null)
+            return null;
+
+        IMethodSymbol? constructor = null;
+        var arguments = new Dictionary<string, ExpressionSyntax>(attributeSyntax.ArgumentList.Arguments.Count);
+        for (int i = 0; i < attributeSyntax.ArgumentList.Arguments.Count; i++)
+        {
+            var argument = attributeSyntax.ArgumentList.Arguments[i];
+            if (argument.NameColon != null)
+            {
+                arguments[argument.NameColon.Name.ToString()] = argument.Expression;
+            }
+            else
+            {
+                constructor ??= semanticModel.GetSymbolInfo(attributeSyntax).Symbol as IMethodSymbol;
+                if (constructor == null)
+                {
+                    // if we couldn't find a constructor, this is likely because there is a compilation error
+                    // for example int value passed into string parameter
+                    return null;
+                }
+
+                arguments[constructor.Parameters[i].Name] = argument.Expression;
+            }
+        }
+
+        return arguments;
+    }
 
     /// <summary>
     /// Gets the location of a method invocation including the method name and arguments.
@@ -203,12 +240,12 @@ public static class ExpressionExtensions
 
     private static ArgumentSyntax? GetArgument(
         string argumentName,
-        IDictionary<string, ArgumentSyntax> namedArguments,
+        Dictionary<string, ArgumentSyntax> namedArguments,
         InvocationExpressionSyntax invocation,
         IMethodSymbol methodSymbol)
     {
-        if (namedArguments.TryGetValue(argumentName, out var msgArg))
-            return msgArg;
+        if (namedArguments.TryGetValue(argumentName, out var arg))
+            return arg;
 
         int paramIndex = GetParamIndex(argumentName, methodSymbol);
         var argument = paramIndex != -1 && invocation.ArgumentList.Arguments.Count > paramIndex
@@ -216,7 +253,7 @@ public static class ExpressionExtensions
             : null;
 
         // if requested argument is a named argument we should find it in 'namedArguments' dict
-        // if we got here and found named argument - it's another argument placed an the requested
+        // if we got here and found named argument - it's another argument placed at the requested
         // argument index, and requested argument has a default value (optional)
         return argument is { NameColon: null }
             ? argument

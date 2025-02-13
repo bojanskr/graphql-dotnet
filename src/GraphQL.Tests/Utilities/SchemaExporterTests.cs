@@ -53,7 +53,7 @@ public class SchemaExporterTests
         serviceCollection.AddSingleton<GraphQL.StarWars.StarWarsData>();
         var services = serviceCollection.BuildServiceProvider();
         var schema = services.GetRequiredService<ISchema>();
-        schema.Print().ShouldMatchApproved(o => o.NoDiff());
+        schema.Print(new() { StringComparison = StringComparison.OrdinalIgnoreCase }).ShouldMatchApproved(o => o.NoDiff());
     }
 
     [Fact]
@@ -61,7 +61,7 @@ public class SchemaExporterTests
     {
         var schema = new FederatedSchemaBuilder()
             .Build("Federated".ReadSDL());
-        schema.Print(new GraphQL.Utilities.PrintOptions { IncludeFederationTypes = false })
+        schema.Print(new() { IncludeFederationTypes = false, StringComparison = StringComparison.OrdinalIgnoreCase })
             .ShouldMatchApproved(o => o.NoDiff());
     }
 
@@ -70,7 +70,7 @@ public class SchemaExporterTests
     {
         var schema = new FederatedSchemaBuilder()
             .Build("Federated".ReadSDL());
-        schema.Print().ShouldMatchApproved(o => o.NoDiff());
+        schema.Print(new() { StringComparison = StringComparison.OrdinalIgnoreCase }).ShouldMatchApproved(o => o.NoDiff());
     }
 
     [Fact]
@@ -170,5 +170,39 @@ public class SchemaExporterTests
             """);
         var exported = new SchemaExporter(schema).Export();
         exported.Definitions.Count(x => x is GraphQLSchemaDefinition).ShouldBe(1);
+    }
+
+    [Fact]
+    public void PrintsOneOfTypesCorrectly()
+    {
+        var sdl = """
+            input ExampleInputTagged @oneOf {
+              a: String
+              b: Int
+            }
+            
+            type Query {
+              test(arg: ExampleInputTagged!): String
+            }
+
+            """;
+        var schema = Schema.For(sdl);
+        var exported = schema.Print(new() { StringComparison = StringComparison.OrdinalIgnoreCase });
+        exported.ShouldBe(sdl);
+    }
+
+    [Fact]
+    public void EndsWithNewline()
+    {
+        var schema = Schema.For(
+            "PetComplex".ReadSDL(),
+            builder =>
+            {
+                builder.Types.ForAll(config => config.ResolveType = _ => null!);
+                builder.IgnoreComments = false;
+            }
+        );
+        var exported = schema.Print(new() { StringComparison = StringComparison.OrdinalIgnoreCase });
+        exported.ShouldEndWith(Environment.NewLine);
     }
 }
